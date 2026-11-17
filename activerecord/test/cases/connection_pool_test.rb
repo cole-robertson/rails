@@ -1470,6 +1470,55 @@ module ActiveRecord
         end
       end
 
+      def test_connection_leased_while_waiting_for_disconnect_can_be_released
+        with_single_connection_pool(checkout_timeout: 1.0) do |pool|
+          pool.lease_connection # drain the only available connection
+          released = nil
+
+          waiting_thread = new_thread do
+            pool.lease_connection
+            released = pool.release_connection
+          end
+
+          # wait for waiting_thread to get in queue
+          pass_to(waiting_thread) until pool.num_waiting_in_queue == 1
+
+          pool.disconnect
+
+          assert waiting_thread.join(2), "waiting_thread got stuck"
+          assert released
+          assert_empty active_connections(pool)
+        ensure
+          waiting_thread&.kill
+        end
+      end
+
+      def test_with_connection_waiting_for_disconnect_keeps_its_connection
+        with_single_connection_pool(checkout_timeout: 1.0) do |pool|
+          pool.lease_connection # drain the only available connection
+          active = nested = nil
+
+          waiting_thread = new_thread do
+            pool.with_connection do |connection|
+              active = pool.active_connection?.equal?(connection)
+              pool.with_connection { |nested_connection| nested = nested_connection.equal?(connection) }
+            end
+          end
+
+          # wait for waiting_thread to get in queue
+          pass_to(waiting_thread) until pool.num_waiting_in_queue == 1
+
+          pool.disconnect
+
+          assert waiting_thread.join(2), "waiting_thread got stuck"
+          assert active, "the connection yielded by with_connection is not the active connection"
+          assert nested, "a nested with_connection did not reuse the connection"
+          assert_empty active_connections(pool)
+        ensure
+          waiting_thread&.kill
+        end
+      end
+
       def test_full_pool_blocks
         cs = @pool.size.times.map { @pool.checkout }
         t = new_thread { @pool.checkout }

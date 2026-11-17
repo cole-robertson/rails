@@ -380,7 +380,12 @@ module ActiveRecord
       # held in a cache keyed by a thread.
       def lease_connection
         lease = connection_lease
-        lease.connection ||= checkout
+        unless lease.connection
+          connection = checkout
+          # The checkout may have waited while #disconnect cleared the leases.
+          lease = connection_lease
+          lease.connection = connection
+        end
         lease.sticky = true
         lease.connection
       end
@@ -480,7 +485,11 @@ module ActiveRecord
           end
         else
           begin
-            yield lease.connection = checkout
+            connection = checkout
+            # The checkout may have waited while #disconnect cleared the leases.
+            lease = connection_lease
+            lease.sticky = false if prevent_permanent_checkout
+            yield lease.connection = connection
           ensure
             lease.sticky = sticky_was if prevent_permanent_checkout
             release_connection(lease) unless lease.sticky
