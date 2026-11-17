@@ -203,6 +203,56 @@ module ActiveRecord
         @pool.connections.each { |conn| conn.close if conn.in_use? }
       end
 
+      def test_reap_removes_connection_when_reset_fails
+        ready = Concurrent::CountDownLatch.new
+        child = new_thread do
+          2.times { @pool.checkout.connect! }
+          ready.count_down
+          stop_thread
+        end
+        pass_to(child) until ready.wait(0)
+
+        child.terminate
+        child.join
+
+        failing, other = active_connections(@pool)
+        failing.define_singleton_method(:reset!) { raise ActiveRecord::StatementInvalid, "reset failed" }
+
+        assert_error_reported(ActiveRecord::StatementInvalid) do
+          @pool.reap
+        end
+
+        assert_not_includes @pool.connections, failing
+        assert_not_predicate failing, :active?
+        assert_includes @pool.connections, other
+        assert_empty active_connections(@pool)
+      end
+
+      def test_reap_continues_when_disconnecting_a_connection_whose_reset_failed_raises
+        ready = Concurrent::CountDownLatch.new
+        child = new_thread do
+          2.times { @pool.checkout.connect! }
+          ready.count_down
+          stop_thread
+        end
+        pass_to(child) until ready.wait(0)
+
+        child.terminate
+        child.join
+
+        failing, other = active_connections(@pool)
+        failing.define_singleton_method(:reset!) { raise ActiveRecord::StatementInvalid, "reset failed" }
+        failing.define_singleton_method(:disconnect!) { raise ActiveRecord::ConnectionNotEstablished, "disconnect failed" }
+
+        assert_error_reported(ActiveRecord::ConnectionNotEstablished) do
+          @pool.reap
+        end
+
+        assert_not_includes @pool.connections, failing
+        assert_includes @pool.connections, other
+        assert_empty active_connections(@pool)
+      end
+
       def test_inactive_are_returned_from_dead_thread
         ready = Concurrent::CountDownLatch.new
         @pool.instance_variable_set(:@max_connections, 1)

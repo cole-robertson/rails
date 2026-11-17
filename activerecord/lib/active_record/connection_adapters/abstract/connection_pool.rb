@@ -745,8 +745,21 @@ module ActiveRecord
 
         stale_connections.each do |conn|
           if conn.active?
-            conn.reset!
-            checkin conn
+            returned = ActiveSupport.error_reporter.handle(source: "active_record.connection_pool", fallback: -> { false }) do
+              conn.reset!
+              checkin conn
+              true
+            end
+
+            unless returned
+              ActiveSupport.error_reporter.handle(source: "active_record.connection_pool") do
+                remove conn
+              end
+
+              ActiveSupport.error_reporter.handle(source: "active_record.connection_pool") do
+                conn.disconnect!
+              end
+            end
           else
             remove conn
           end
